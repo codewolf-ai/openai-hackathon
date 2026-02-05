@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Voice Spec Studio</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="window-frame"></header>
+    <main class="shell">
+      <section class="workspace">
+        <div id="sceneRoot" class="scene-root"></div>
+        <div class="voice-overlay">
+          <p id="voicePrompt" class="voice-prompt">Say something...</p>
+          <div class="voice-actions">
+            <button id="micBtn" class="voice-btn" aria-label="Microphone">
+              <svg class="icon-mic-on" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z"></path>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                <path d="M12 19v3"></path>
+                <path d="M8 22h8"></path>
+              </svg>
+              <svg class="icon-mic-off" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m2 2 20 20"></path>
+                <path d="M9 9v3a3 3 0 0 0 5.12 2.12"></path>
+                <path d="M15 10V6a3 3 0 0 0-5.78-1.28"></path>
+                <path d="M19 10v2a7 7 0 0 1-11.2 5.6"></path>
+                <path d="M12 19v3"></path>
+                <path d="M8 22h8"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./renderer.js"></script>
+  </body>
+</html>

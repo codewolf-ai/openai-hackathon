@@ -1,0 +1,18 @@
+{
+  "name": "voice-spec-studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Barebones Electron app for non-technical app building workflows powered by Codex",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^37.2.0"
+  },
+  "dependencies": {
+    "lucide": "^0.563.0",
+    "three": "^0.182.0"
+  }
+}
