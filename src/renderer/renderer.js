@@ -19,10 +19,13 @@ let realtimeState = null;
 let userVoiceLevel = 0;
 let agentVoiceLevel = 0;
 let removeRoutingListener = null;
+let removeTaskResultListener = null;
 let routingAgents = [];
 let selectedAgentId = null;
 let taskTimerInterval = null;
 const ENABLE_REALTIME_TASKS_OPEN = true;
+let hasHydratedTaskResults = false;
+const announcedTaskResultIds = new Set();
 
 function logRealtime(message, meta = {}) {
   if (!window.studioApi?.logRealtime) return;
@@ -73,22 +76,80 @@ function buildCoordinatorStateSummary() {
     return 'Agent state: no agents configured.';
   }
 
+  const compact = (text, max = 180) => {
+    const clean = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!clean) return '';
+    return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+  };
+
   const lines = routingAgents.map((agent) => {
     const status = normalizeAgentStatus(agent.status);
     const task = typeof agent.current_task === 'string' && agent.current_task.trim() ? agent.current_task.trim() : 'none';
     const elapsed = Number.isFinite(agent.elapsed_seconds) ? `${agent.elapsed_seconds}s` : '0s';
-    return `- ${agent.id}: status=${status}; task=${task}; elapsed=${elapsed}`;
+    const tasks = Array.isArray(agent.tasks) ? agent.tasks : [];
+    const latestTask = tasks.length > 0 ? tasks[tasks.length - 1] : null;
+    const threadId =
+      typeof latestTask?.thread_id === 'string' && latestTask.thread_id.trim() ? latestTask.thread_id.trim() : '';
+    const result = compact(latestTask?.result_message || agent.last_result_message || '');
+    const resultPart = result ? `; last_result="${result}"` : '';
+    const threadPart = threadId ? `; thread_id=${threadId}` : '';
+    return `- ${agent.id}: status=${status}; task=${task}; elapsed=${elapsed}${threadPart}${resultPart}`;
   });
 
   const workingCount = routingAgents.filter((agent) => normalizeAgentStatus(agent.status) === 'working').length;
   const completedCount = routingAgents.filter((agent) => normalizeAgentStatus(agent.status) === 'completed').length;
+  const failedCount = routingAgents.filter((agent) => normalizeAgentStatus(agent.status) === 'failed').length;
   const notStartedCount = routingAgents.filter((agent) => normalizeAgentStatus(agent.status) === 'not_started').length;
 
   return [
-    `Agent state snapshot: ${workingCount} working, ${completedCount} completed, ${notStartedCount} not_started.`,
+    `Agent state snapshot: ${workingCount} working, ${completedCount} completed, ${failedCount} failed, ${notStartedCount} not_started.`,
     'Agents:',
     ...lines
   ].join('\n');
+}
+
+function collectNewTerminalTaskResults(agents) {
+  const safeAgents = Array.isArray(agents) ? agents : [];
+  const seenTerminalIds = new Set();
+  const pendingAnnouncements = [];
+
+  for (const agent of safeAgents) {
+    const agentId = typeof agent?.id === 'string' ? agent.id : 'agent';
+    const tasks = Array.isArray(agent?.tasks) ? agent.tasks : [];
+    for (const task of tasks) {
+      const status = normalizeAgentStatus(task?.status);
+      if (status !== 'completed' && status !== 'failed') continue;
+      const taskId =
+        typeof task?.id === 'string' && task.id.trim()
+          ? task.id.trim()
+          : `${agentId}:${task?.title || 'task'}:${task?.created_at || ''}`;
+      if (!taskId) continue;
+      seenTerminalIds.add(taskId);
+
+      if (!hasHydratedTaskResults) continue;
+      if (announcedTaskResultIds.has(taskId)) continue;
+      announcedTaskResultIds.add(taskId);
+      pendingAnnouncements.push({
+        taskId,
+        agentId,
+        title: typeof task?.title === 'string' && task.title.trim() ? task.title.trim() : 'Task',
+        status,
+        result:
+          typeof task?.result_message === 'string' && task.result_message.trim()
+            ? task.result_message.trim()
+            : status === 'completed'
+              ? 'Task completed.'
+              : 'Task failed.'
+      });
+    }
+  }
+
+  if (!hasHydratedTaskResults) {
+    for (const id of seenTerminalIds) announcedTaskResultIds.add(id);
+    hasHydratedTaskResults = true;
+    return [];
+  }
+  return pendingAnnouncements;
 }
 
 async function boot() {
@@ -106,6 +167,31 @@ async function boot() {
     const routing = await window.studioApi.getRouting();
     renderRouting(routing);
     removeRoutingListener = window.studioApi.onRoutingUpdate((next) => renderRouting(next));
+    removeTaskResultListener = window.studioApi.onTaskResult?.((update) => {
+      if (!update || typeof update !== 'object') return;
+      const taskId =
+        typeof update.task_id === 'string' && update.task_id.trim()
+          ? update.task_id.trim()
+          : `${update.agent_id || 'agent'}:${update.title || 'task'}`;
+      announcedTaskResultIds.add(taskId);
+      if (!realtimeState?.notifyTaskResult) return;
+      realtimeState.notifyTaskResult({
+        taskId,
+        agentId: typeof update.agent_id === 'string' ? update.agent_id : 'agent',
+        title: typeof update.title === 'string' ? update.title : 'Task',
+        status: normalizeAgentStatus(update.status),
+        result:
+          typeof update.result_message === 'string' && update.result_message.trim()
+            ? update.result_message.trim()
+            : normalizeAgentStatus(update.status) === 'failed'
+              ? 'Task failed.'
+              : 'Task completed.'
+      });
+      logRealtime('task result event received', {
+        taskId,
+        status: update.status || ''
+      });
+    });
   } catch (error) {
     console.error('Routing load failed:', error);
   }
@@ -114,6 +200,7 @@ async function boot() {
 function renderRouting(payload) {
   if (!sourcesClusterEl || !sourcesCountEl) return;
   const agents = Array.isArray(payload?.agents) ? payload.agents : [];
+  const terminalAnnouncements = collectNewTerminalTaskResults(agents);
   routingAgents = agents.slice();
   const agentCount = routingAgents.length;
   const hasAssignedTasks = hasActiveAssignedTasks();
@@ -197,6 +284,11 @@ function renderRouting(payload) {
 
   if (realtimeState?.syncCoordinatorContext) {
     realtimeState.syncCoordinatorContext();
+  }
+  if (realtimeState?.notifyTaskResult && terminalAnnouncements.length > 0) {
+    for (const update of terminalAnnouncements) {
+      realtimeState.notifyTaskResult(update);
+    }
   }
 }
 
@@ -677,8 +769,12 @@ async function startRealtimeAgent(stream) {
   let raf = 0;
   let activeDataChannel = null;
   let pendingToolFollowup = false;
+  let realtimeResponseActive = false;
+  let pendingToolFollowupSince = 0;
+  let realtimeResponseActiveSince = 0;
   const handledToolCallIds = new Set();
   const handledFunctionSignatures = new Map();
+  const taskUpdateQueue = [];
 
   function shouldHandleFunctionOnce(name, argsValue) {
     const argsText =
@@ -726,6 +822,7 @@ async function startRealtimeAgent(stream) {
       'If user asks to assign/delegate work: call assign_agent_tasks with tasks mapped to agent_id values.',
       'If user asks about available projects/workspaces: call list_projects.',
       'If user asks about threads: call list_threads. If they ask to start a new one: call create_thread.',
+      'If user asks what happened in a thread, execution details, or run logs: call get_thread_logs with thread_id.',
       'When calling create_thread, include initial_task and agent_id when possible so work can start immediately.',
       'If user asks about automations/schedules: call list_automations.',
       'If user asks about skills/capabilities: call list_skills.',
@@ -733,8 +830,71 @@ async function startRealtimeAgent(stream) {
       '',
       '## Post-Action Response',
       'After a UI or task tool action, respond in one short friendly sentence.',
+      'If you receive a system TASK_UPDATE message, briefly tell the user what finished or failed in one sentence.',
+      'Do not call tools for TASK_UPDATE messages unless the user asks for a follow-up action.',
       buildCoordinatorStateSummary()
     ].join('\n');
+  }
+
+  function flushTaskUpdateQueue() {
+    const now = Date.now();
+    if (pendingToolFollowup && pendingToolFollowupSince && now - pendingToolFollowupSince > 3500) {
+      pendingToolFollowup = false;
+      pendingToolFollowupSince = 0;
+      logRealtime('task update queue: cleared stale pending tool followup');
+    }
+    if (realtimeResponseActive && realtimeResponseActiveSince && now - realtimeResponseActiveSince > 12000) {
+      realtimeResponseActive = false;
+      realtimeResponseActiveSince = 0;
+      logRealtime('task update queue: cleared stale active response flag');
+    }
+
+    if (realtimeResponseActive) {
+      logRealtime('task update queue blocked', { reason: 'response_active', queued: taskUpdateQueue.length });
+      return;
+    }
+    if (pendingToolFollowup) {
+      logRealtime('task update queue blocked', { reason: 'pending_tool_followup', queued: taskUpdateQueue.length });
+      return;
+    }
+    if (taskUpdateQueue.length === 0) return;
+    const channel = activeDataChannel && activeDataChannel.readyState === 'open' ? activeDataChannel : null;
+    if (!channel) return;
+    const next = taskUpdateQueue.shift();
+    if (!next || typeof next !== 'object') return;
+
+    const statusText = next.status === 'failed' ? 'failed' : 'completed';
+    const text = [
+      `TASK_UPDATE`,
+      `agent=${next.agentId || 'agent'}`,
+      `task="${next.title || 'Task'}"`,
+      `status=${statusText}`,
+      `result="${String(next.result || '').replace(/\s+/g, ' ').trim().slice(0, 320)}"`
+    ].join('; ');
+
+    channel.send(
+      JSON.stringify({
+        type: 'conversation.item.create',
+        item: {
+          type: 'message',
+          role: 'system',
+          content: [{ type: 'input_text', text }]
+        }
+      })
+    );
+    channel.send(JSON.stringify({ type: 'response.create' }));
+    realtimeResponseActive = true;
+    realtimeResponseActiveSince = Date.now();
+    logRealtime('task update pushed to coordinator', {
+      taskId: next.taskId || '',
+      status: statusText
+    });
+  }
+
+  function notifyTaskResult(update) {
+    if (!update || typeof update !== 'object') return;
+    taskUpdateQueue.push(update);
+    flushTaskUpdateQueue();
   }
 
   function openTasksPanelFromSignal() {
@@ -885,6 +1045,43 @@ async function startRealtimeAgent(stream) {
       return result && typeof result === 'object' ? result : { ok: true, threads: [] };
     } catch (error) {
       logRealtime('list_threads failed', { error: String(error) });
+      return { ok: false, error: String(error) };
+    }
+  }
+
+  async function getThreadLogsFromSignal(rawArguments) {
+    if (!window.studioApi?.getCodexThreadLogs) {
+      logRealtime('get_thread_logs unavailable: preload API missing');
+      return { ok: false, error: 'preload_api_missing' };
+    }
+    let parsed = {};
+    if (typeof rawArguments === 'string' && rawArguments.trim()) {
+      try {
+        parsed = JSON.parse(rawArguments);
+      } catch {
+        parsed = {};
+      }
+    } else if (rawArguments && typeof rawArguments === 'object') {
+      parsed = rawArguments;
+    }
+
+    const thread_id = typeof parsed?.thread_id === 'string' ? parsed.thread_id.trim() : '';
+    if (!thread_id) {
+      logRealtime('get_thread_logs failed', { error: 'thread_id_required' });
+      return { ok: false, error: 'thread_id_required' };
+    }
+
+    const limit = Number.isFinite(parsed?.limit) ? parsed.limit : undefined;
+    try {
+      const result = await window.studioApi.getCodexThreadLogs({ thread_id, limit });
+      logRealtime('get_thread_logs completed', {
+        thread_id,
+        ok: result?.ok === true,
+        lines: result?.lines || 0
+      });
+      return result && typeof result === 'object' ? result : { ok: false, error: 'invalid_result' };
+    } catch (error) {
+      logRealtime('get_thread_logs failed', { thread_id, error: String(error) });
       return { ok: false, error: String(error) };
     }
   }
@@ -1072,6 +1269,10 @@ async function startRealtimeAgent(stream) {
       const result = await createThreadFromSignal(args);
       return { handled: true, callId, toolName: name, result };
     }
+    if (name === 'get_thread_logs') {
+      const result = await getThreadLogsFromSignal(args);
+      return { handled: true, callId, toolName: name, result };
+    }
     if (name === 'list_automations') {
       const result = await listAutomationsFromSignal();
       return { handled: true, callId, toolName: name, result };
@@ -1225,6 +1426,20 @@ async function startRealtimeAgent(stream) {
             },
             {
               type: 'function',
+              name: 'get_thread_logs',
+              description: 'Read Codex thread logs for a given thread_id to inspect what the agent actually did.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  thread_id: { type: 'string' },
+                  limit: { type: 'number' }
+                },
+                required: ['thread_id'],
+                additionalProperties: false
+              }
+            },
+            {
+              type: 'function',
               name: 'list_automations',
               description: 'List available Codex automations.',
               parameters: {
@@ -1281,6 +1496,7 @@ async function startRealtimeAgent(stream) {
       console.log('[realtime] data channel open', { label: channel.label, origin });
       logRealtime('data channel open', { label: channel.label, origin });
       sendSessionUpdate(channel);
+      flushTaskUpdateQueue();
     });
 
     channel.addEventListener('close', () => {
@@ -1311,16 +1527,37 @@ async function startRealtimeAgent(stream) {
         }
         logRealtime('realtime event', eventMeta);
 
+        if (type === 'response.created') {
+          realtimeResponseActive = true;
+          realtimeResponseActiveSince = Date.now();
+        }
+
         if (type === 'response.done' && pendingToolFollowup) {
+          realtimeResponseActive = false;
+          realtimeResponseActiveSince = 0;
           const followupChannel =
             activeDataChannel && activeDataChannel.readyState === 'open' ? activeDataChannel : channel;
           if (followupChannel.readyState === 'open') {
             followupChannel.send(JSON.stringify({ type: 'response.create' }));
             console.log('[realtime] response.create sent after tool output');
             logRealtime('response.create sent after tool output');
+            realtimeResponseActive = true;
+            realtimeResponseActiveSince = Date.now();
           }
           pendingToolFollowup = false;
+          pendingToolFollowupSince = 0;
           handledToolCallIds.clear();
+          return;
+        }
+
+        if (type === 'response.done') {
+          realtimeResponseActive = false;
+          realtimeResponseActiveSince = 0;
+          flushTaskUpdateQueue();
+        }
+
+        if (type === 'session.updated') {
+          flushTaskUpdateQueue();
         }
 
         const toolExecution = await executeToolCall(payload);
@@ -1356,6 +1593,7 @@ async function startRealtimeAgent(stream) {
               ok: toolExecution.result?.ok === true
             });
             pendingToolFollowup = true;
+            pendingToolFollowupSince = Date.now();
           }
           return;
         }
@@ -1406,6 +1644,7 @@ async function startRealtimeAgent(stream) {
 
   return {
     syncCoordinatorContext,
+    notifyTaskResult,
     stop() {
       if (raf) window.cancelAnimationFrame(raf);
       if (remoteMeter) {
@@ -1418,6 +1657,7 @@ async function startRealtimeAgent(stream) {
       }
       dataChannels.clear();
       activeDataChannel = null;
+      taskUpdateQueue.length = 0;
       pc.getSenders().forEach((sender) => {
         if (sender.track) sender.track.stop();
       });
@@ -1477,6 +1717,7 @@ window.addEventListener('beforeunload', () => {
   if (realtimeState) realtimeState.stop();
   if (micState) micState.stop();
   if (removeRoutingListener) removeRoutingListener();
+  if (removeTaskResultListener) removeTaskResultListener();
 });
 
 if (micBtn) {

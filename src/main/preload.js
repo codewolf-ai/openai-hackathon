@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('studioApi', {
   getCodexCapabilities: () => ipcRenderer.invoke('codex:get-capabilities'),
   listCodexProjects: () => ipcRenderer.invoke('codex:list-projects'),
   listCodexThreads: () => ipcRenderer.invoke('codex:list-threads'),
+  getCodexThreadLogs: (payload) => ipcRenderer.invoke('codex:get-thread-logs', payload),
   createCodexThread: (payload) => ipcRenderer.invoke('codex:create-thread', payload),
   listCodexSkills: () => ipcRenderer.invoke('codex:list-skills'),
   listCodexAutomations: () => ipcRenderer.invoke('codex:list-automations'),
@@ -28,5 +29,10 @@ contextBridge.exposeInMainWorld('studioApi', {
     const listener = (_event, payload) => handler(payload);
     ipcRenderer.on('state:update', listener);
     return () => ipcRenderer.removeListener('state:update', listener);
+  },
+  onTaskResult: (handler) => {
+    const listener = (_event, payload) => handler(payload);
+    ipcRenderer.on('task:result', listener);
+    return () => ipcRenderer.removeListener('task:result', listener);
   }
 });

@@ -270,6 +270,115 @@ function listCodexThreads() {
   return ranked;
 }
 
+function findThreadSessionFiles(threadId) {
+  if (!threadId || typeof threadId !== 'string') return [];
+  const sessionsDir = path.join(codexHomeDir, 'sessions');
+  if (!fs.existsSync(sessionsDir)) return [];
+  const out = [];
+  const stack = [sessionsDir];
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (!entry.name.endsWith('.jsonl')) continue;
+      if (!entry.name.includes(threadId)) continue;
+      try {
+        const stat = fs.statSync(fullPath);
+        out.push({ path: fullPath, mtimeMs: stat.mtimeMs || 0, size: stat.size || 0 });
+      } catch {
+        // Ignore unreadable files.
+      }
+    }
+  }
+  out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return out;
+}
+
+function readThreadLogTail(threadId, options = {}) {
+  const files = findThreadSessionFiles(threadId);
+  if (files.length === 0) {
+    return { ok: false, error: 'thread_logs_not_found', thread_id: threadId, files: [] };
+  }
+
+  const limit = Math.max(10, Math.min(200, Number.parseInt(options.limit || '80', 10) || 80));
+  const maxChars = Math.max(2000, Math.min(40000, Number.parseInt(options.max_chars || '12000', 10) || 12000));
+  const primary = files[0];
+  let raw = '';
+  try {
+    raw = fs.readFileSync(primary.path, 'utf8');
+  } catch (error) {
+    return { ok: false, error: 'thread_log_read_failed', thread_id: threadId, path: primary.path, details: String(error) };
+  }
+  const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const tail = lines.slice(Math.max(0, lines.length - limit));
+
+  const events = [];
+  for (const line of tail) {
+    try {
+      const parsed = JSON.parse(line);
+      const eventType = parsed?.type || parsed?.event?.type || parsed?.msg?.type || parsed?.method || 'event';
+      const text = extractAgentMessageText(parsed);
+      const command =
+        parsed?.command ||
+        parsed?.params?.command ||
+        parsed?.params?.exec_command?.command ||
+        parsed?.params?.item?.command ||
+        null;
+      const output =
+        parsed?.params?.output_delta ||
+        parsed?.params?.delta ||
+        parsed?.params?.output ||
+        parsed?.output ||
+        '';
+      events.push({
+        type: String(eventType).slice(0, 80),
+        text: text ? text.slice(0, 240) : '',
+        command: Array.isArray(command)
+          ? command.join(' ').slice(0, 240)
+          : typeof command === 'string'
+            ? command.slice(0, 240)
+            : '',
+        output: typeof output === 'string' ? output.replace(/\s+/g, ' ').trim().slice(0, 240) : ''
+      });
+    } catch {
+      // Keep going even if one line is not JSON.
+    }
+  }
+
+  const compactEvents = events.filter((evt) => evt.type || evt.text || evt.command || evt.output);
+  const summaryChunks = [];
+  for (const evt of compactEvents.slice(-40)) {
+    const parts = [];
+    if (evt.type) parts.push(`type=${evt.type}`);
+    if (evt.command) parts.push(`command="${evt.command}"`);
+    if (evt.text) parts.push(`text="${evt.text}"`);
+    if (evt.output) parts.push(`output="${evt.output}"`);
+    if (parts.length > 0) summaryChunks.push(parts.join(' | '));
+  }
+  const summary = summaryChunks.join('\n').slice(0, maxChars);
+
+  return {
+    ok: true,
+    thread_id: threadId,
+    path: primary.path,
+    lines: lines.length,
+    files: files.map((item) => item.path),
+    summary,
+    events: compactEvents.slice(-20)
+  };
+}
+
 async function createCodexThread(title) {
   const safeTitle = typeof title === 'string' && title.trim() ? title.trim() : 'New thread';
   const { cmd, args } = parseCommand(process.env.CODEX_APP_SERVER_CMD);
@@ -625,6 +734,97 @@ function getAppServerPolicy() {
   return { sandbox, approvalPolicy, sandboxPolicy };
 }
 
+function collectTextFragments(value, out) {
+  if (!value) return;
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (text) out.push(text);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectTextFragments(item, out);
+    return;
+  }
+  if (typeof value === 'object') {
+    const preferredKeys = ['text', 'delta', 'message', 'content', 'summary', 'output_text'];
+    for (const key of preferredKeys) {
+      if (key in value) {
+        collectTextFragments(value[key], out);
+      }
+    }
+  }
+}
+
+function extractAgentMessageText(msg) {
+  if (!msg || typeof msg !== 'object') return '';
+  const parts = [];
+  collectTextFragments(msg.params, parts);
+  collectTextFragments(msg.result, parts);
+  const joined = parts.join(' ').replace(/\s+/g, ' ').trim();
+  return joined.slice(0, 2000);
+}
+
+function summarizeAppServerEvent(msg) {
+  if (!msg || typeof msg !== 'object') return '';
+  const method = typeof msg.method === 'string' ? msg.method : '';
+  const params = msg.params && typeof msg.params === 'object' ? msg.params : {};
+
+  const commandValue =
+    params.command ||
+    params.exec_command?.command ||
+    params.item?.command ||
+    params.commandExecution?.command ||
+    null;
+
+  if (method === 'codex/event/exec_command_begin') {
+    if (Array.isArray(commandValue) && commandValue.length > 0) {
+      return `Command started: ${commandValue.join(' ')}`;
+    }
+    if (typeof commandValue === 'string' && commandValue.trim()) {
+      return `Command started: ${commandValue.trim()}`;
+    }
+    return 'Command started';
+  }
+
+  if (method === 'codex/event/exec_command_end') {
+    const exitCode =
+      params.exit_code ??
+      params.exitCode ??
+      params.commandExecution?.exit_code ??
+      params.commandExecution?.exitCode;
+    if (typeof exitCode === 'number') {
+      return `Command finished with exit code ${exitCode}`;
+    }
+    return 'Command finished';
+  }
+
+  if (method === 'codex/event/exec_command_output_delta' || method === 'item/commandExecution/outputDelta') {
+    const output =
+      params.output_delta ||
+      params.delta ||
+      params.output ||
+      params.commandExecution?.output_delta ||
+      params.commandExecution?.output ||
+      '';
+    const text = String(output || '').replace(/\s+/g, ' ').trim();
+    return text ? `Command output: ${text.slice(0, 240)}` : '';
+  }
+
+  if (method === 'codex/event/agent_message') {
+    const text = extractAgentMessageText(msg);
+    return text ? `Agent: ${text.slice(0, 320)}` : '';
+  }
+
+  if (method === 'codex/event/error' || method === 'error') {
+    const err = params.error || msg.error;
+    const text = typeof err === 'string' ? err : JSON.stringify(err || {});
+    const clean = String(text || '').replace(/\s+/g, ' ').trim();
+    return clean ? `Error: ${clean.slice(0, 280)}` : 'Error';
+  }
+
+  return '';
+}
+
 async function runCodexQuietTask({ requestText, model, timeoutMs, agentId, codexCmd = 'codex', baseArgs = [] }) {
   return new Promise((resolve) => {
     const prefixArgs = Array.isArray(baseArgs) ? baseArgs.filter(Boolean) : [];
@@ -752,6 +952,10 @@ async function runCodexAppServerTask(agent, taskText) {
     let threadId = null;
     let turnStartedAt = Date.now();
     let doneStatus = null;
+    let agentMessageDelta = '';
+    let agentMessageFinal = '';
+    let lastErrorMessage = '';
+    const appServerLogs = [];
 
     function finish(result) {
       if (finished) return;
@@ -795,6 +999,7 @@ async function runCodexAppServerTask(agent, taskText) {
       stderr += text;
       const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
       for (const line of lines) {
+        lastErrorMessage = line;
         appendRealtimeLog('codex app-server stderr', { line: line.slice(0, 600) });
       }
     });
@@ -826,16 +1031,63 @@ async function runCodexAppServerTask(agent, taskText) {
           });
         }
 
+        if (msg.error) {
+          lastErrorMessage = JSON.stringify(msg.error).slice(0, 600);
+        }
+
+        const method = typeof msg.method === 'string' ? msg.method : '';
+        if (method === 'codex/event/agent_message_content_delta' || method === 'item/agentMessage/delta') {
+          const deltaText = extractAgentMessageText(msg);
+          if (deltaText) agentMessageDelta = `${agentMessageDelta}${deltaText}`;
+        } else if (method === 'codex/event/agent_message') {
+          const finalText = extractAgentMessageText(msg);
+          if (finalText) agentMessageFinal = finalText;
+        }
+        const eventSummary = summarizeAppServerEvent(msg);
+        if (eventSummary) {
+          const clean = eventSummary.replace(/\s+/g, ' ').trim().slice(0, 320);
+          if (clean) {
+            appServerLogs.push(clean);
+            if (appServerLogs.length > 40) appServerLogs.shift();
+            if (
+              method === 'codex/event/exec_command_begin' ||
+              method === 'codex/event/exec_command_end' ||
+              method === 'codex/event/exec_command_output_delta' ||
+              method === 'codex/event/agent_message'
+            ) {
+              appendRealtimeLog('codex app-server detail', {
+                method,
+                detail: clean
+              });
+            }
+          }
+        }
+
         if (msg.id === 1 && msg.error) {
-          finish({ ok: false, reason: 'initialize_failed', error: msg.error });
+          finish({
+            ok: false,
+            reason: 'initialize_failed',
+            error: msg.error,
+            errorMessage: lastErrorMessage || 'initialize_failed'
+          });
           return;
         }
         if (msg.id === 2 && msg.error) {
-          finish({ ok: false, reason: 'thread_start_failed', error: msg.error });
+          finish({
+            ok: false,
+            reason: 'thread_start_failed',
+            error: msg.error,
+            errorMessage: lastErrorMessage || 'thread_start_failed'
+          });
           return;
         }
         if (msg.id === 3 && msg.error) {
-          finish({ ok: false, reason: 'turn_start_failed', error: msg.error });
+          finish({
+            ok: false,
+            reason: 'turn_start_failed',
+            error: msg.error,
+            errorMessage: lastErrorMessage || 'turn_start_failed'
+          });
           return;
         }
 
@@ -855,11 +1107,16 @@ async function runCodexAppServerTask(agent, taskText) {
 
         if (msg.method === 'turn/completed') {
           doneStatus = msg.params?.turn?.status || 'completed';
+          const assistantMessage = (agentMessageFinal || agentMessageDelta).replace(/\s+/g, ' ').trim().slice(0, 2000);
+          const logSummary = appServerLogs.join('\n').slice(0, 6000);
           finish({
             ok: doneStatus === 'completed',
             status: doneStatus,
             threadId,
-            durationMs: Date.now() - turnStartedAt
+            durationMs: Date.now() - turnStartedAt,
+            assistantMessage,
+            errorMessage: lastErrorMessage || '',
+            logSummary
           });
           return;
         }
@@ -872,7 +1129,10 @@ async function runCodexAppServerTask(agent, taskText) {
           ok: doneStatus === 'completed',
           reason: doneStatus ? 'turn_completed_before_exit' : 'process_exited',
           exitCode: code,
-          status: doneStatus
+          status: doneStatus,
+          assistantMessage: (agentMessageFinal || agentMessageDelta).replace(/\s+/g, ' ').trim().slice(0, 2000),
+          errorMessage: lastErrorMessage || '',
+          logSummary: appServerLogs.join('\n').slice(0, 6000)
         });
       }
     });
@@ -978,6 +1238,18 @@ function runAgentTaskExecution({ agent_id, task_id, title, prompt }) {
     const startedAt = Date.now();
     const run = await runCodexAppServerTask({ id: agent_id }, prompt || title);
     const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+    const runReason = run.reason || run.status || run.error || 'unknown';
+    const resultMessage = String(
+      run.assistantMessage ||
+        run.logSummary ||
+        (run.ok
+          ? 'Task completed.'
+          : run.errorMessage || run.stderr || `Task failed (${runReason}).`)
+    )
+      .replace(/\u001b\[[0-9;]*m/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 1600);
 
     updateRouting((current) => {
       const nextAgents = current.agents.map((item) => {
@@ -988,7 +1260,17 @@ function runAgentTaskExecution({ agent_id, task_id, title, prompt }) {
               return {
                 ...taskItem,
                 status: run.ok ? 'completed' : 'failed',
-                elapsed_seconds: elapsedSeconds
+                elapsed_seconds: elapsedSeconds,
+                result_reason: run.ok ? 'completed' : runReason,
+                result_message: resultMessage || undefined,
+                result_log: run.logSummary ? String(run.logSummary).slice(0, 6000) : undefined,
+                thread_id:
+                  typeof run.threadId === 'string' && run.threadId.trim()
+                    ? run.threadId.trim()
+                    : typeof taskItem?.thread_id === 'string'
+                      ? taskItem.thread_id
+                      : '',
+                completed_at: new Date().toISOString()
               };
             })
           : [];
@@ -1005,7 +1287,9 @@ function runAgentTaskExecution({ agent_id, task_id, title, prompt }) {
           current_task: latestTask?.title || item.current_task || '',
           task_details: latestTask?.description || latestTask?.title || item.task_details || '',
           tasks: nextTasks,
-          last_error: run.ok ? undefined : run.reason || run.error || 'codex_task_failed'
+          last_error: run.ok ? undefined : runReason || 'codex_task_failed',
+          last_result_message: resultMessage || undefined,
+          last_result_reason: run.ok ? 'completed' : runReason
         };
       });
 
@@ -1020,7 +1304,19 @@ function runAgentTaskExecution({ agent_id, task_id, title, prompt }) {
       agent: agent_id,
       task: title,
       ok: Boolean(run.ok),
-      reason: run.reason || null
+      reason: runReason || null,
+      message: resultMessage ? resultMessage.slice(0, 200) : null
+    });
+
+    broadcastTaskResult({
+      task_id,
+      agent_id,
+      title,
+      status: run.ok ? 'completed' : 'failed',
+      reason: runReason || null,
+      thread_id: typeof run.threadId === 'string' ? run.threadId : '',
+      result_message: resultMessage || '',
+      elapsed_seconds: elapsedSeconds
     });
   });
 }
@@ -1253,6 +1549,11 @@ function broadcastRoutingUpdate() {
   mainWindow.webContents.send('routing:update', readRoutingFile());
 }
 
+function broadcastTaskResult(update) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('task:result', update);
+}
+
 function setupRoutingWatcher() {
   if (routingWatcherStarted) return;
   routingWatcherStarted = true;
@@ -1481,6 +1782,23 @@ ipcMain.handle('codex:create-thread', async (_event, payload) => {
   }
 
   return { ok: true, thread, task, auto_started: Boolean(task?.ok) };
+});
+
+ipcMain.handle('codex:get-thread-logs', async (_event, payload) => {
+  const threadId = typeof payload?.thread_id === 'string' ? payload.thread_id.trim() : '';
+  if (!threadId) {
+    return { ok: false, error: 'thread_id_required' };
+  }
+  const result = readThreadLogTail(threadId, {
+    limit: payload?.limit,
+    max_chars: payload?.max_chars
+  });
+  appendRealtimeLog('get_thread_logs completed', {
+    thread_id: threadId,
+    ok: result?.ok === true,
+    path: result?.path || null
+  });
+  return result;
 });
 
 ipcMain.handle('codex:list-skills', async () => {
