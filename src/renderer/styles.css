@@ -48,6 +48,329 @@ body {
   bottom: 0;
 }
 
+.sources-strip {
+  position: absolute;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-8px);
+  width: fit-content;
+  min-width: 0;
+  max-width: calc(100% - 40px);
+  height: 56px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 28px;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  gap: 6px;
+  z-index: 4;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 220ms ease, transform 220ms ease;
+}
+
+.sources-strip.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(-50%) translateY(0);
+}
+
+.sources-cluster {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.source-chip {
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.17);
+  margin-left: -7px;
+  display: grid;
+  place-items: center;
+  color: #d9dee8;
+  font-family: "SF Pro Display", "Avenir Next", sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: none;
+  outline: none;
+  padding: 0;
+  background: #181818;
+  position: relative;
+  transition: transform 240ms cubic-bezier(0.22, 1.35, 0.36, 1), box-shadow 240ms ease;
+  z-index: 1;
+}
+
+.source-chip:first-child {
+  margin-left: 0;
+}
+
+.source-chip:hover {
+  transform: translateY(-2px) scale(1.12);
+  z-index: 8;
+  box-shadow: none;
+}
+
+.source-chip::after {
+  content: attr(data-duty);
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 12px);
+  transform: translateX(-50%) translateY(-6px);
+  width: max-content;
+  max-width: 220px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: #181818;
+  color: rgba(255, 255, 255, 0.9);
+  font-family: "SF Pro Display", "Avenir Next", sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: 0;
+  white-space: normal;
+  text-shadow: none;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.source-chip:hover::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.source-chip-icon {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.source-chip-icon svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.source-chip-icon.is-running {
+  color: rgba(230, 236, 245, 0.92);
+  animation: chip-spin 1s linear infinite;
+}
+
+.source-chip-icon.is-stopped {
+  color: rgba(191, 201, 214, 0.6);
+}
+
+.source-chip-icon.is-complete {
+  color: #22c55e;
+}
+
+.source-chip-icon.is-failed {
+  color: #ef4444;
+}
+
+@keyframes chip-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.sources-count {
+  margin-left: 3px;
+  margin-right: 4px;
+  color: rgba(255, 255, 255, 0.82);
+  font-family: "SF Pro Display", "Avenir Next", sans-serif;
+  font-size: 15px;
+  font-weight: 580;
+  line-height: 1;
+}
+
+.drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+  z-index: 5;
+}
+
+.agent-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 370px;
+  height: 100%;
+  padding: 8px 12px 12px;
+  background: rgba(24, 24, 24, 0.16);
+  border-left: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(24px) saturate(140%);
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  transform: translateX(100%);
+  transition: transform 220ms ease;
+  z-index: 6;
+}
+
+body.drawer-open .drawer-backdrop {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+body.drawer-open .agent-drawer {
+  transform: translateX(0);
+}
+
+.agent-drawer-content {
+  margin-top: 8px;
+}
+
+.all-agents-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 10px;
+}
+
+.agent-card {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: #181818;
+  overflow: hidden;
+  display: grid;
+  gap: 0;
+}
+
+.agent-card-head {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.agent-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  object-fit: cover;
+  background: #f1f5f9;
+}
+
+.agent-title {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.92);
+  font-family: "SF Pro Display", "Avenir Next", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.agent-desc {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.66);
+  font-family: "SF Pro Display", "Avenir Next", sans-serif;
+  font-size: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.agent-card-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.agent-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-footer-status {
+  color: rgba(255, 255, 255, 0.8);
+  font-family: "SF Pro Display", "Avenir Next", sans-serif;
+  font-size: 12px;
+}
+
+.agent-status-icon {
+  width: 16px;
+  height: 16px;
+  color: rgba(230, 236, 245, 0.92);
+  flex: 0 0 auto;
+}
+
+.agent-status-icon svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.agent-status-icon.is-complete {
+  color: #22c55e;
+}
+
+.agent-percent {
+  color: rgba(255, 255, 255, 0.62);
+  font-family: "SF Pro Display", "Avenir Next", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-btn {
+  position: absolute;
+  left: 18px;
+  bottom: 18px;
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  border: none;
+  background: #181818;
+  color: rgba(235, 240, 246, 0.92);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  z-index: 4;
+  -webkit-app-region: no-drag;
+  transition: transform 140ms ease, border-color 140ms ease, opacity 140ms ease;
+}
+
+.settings-btn:hover {
+  transform: translateY(-1px);
+}
+
+.settings-btn:active {
+  transform: translateY(0);
+  opacity: 0.85;
+}
+
+.settings-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .voice-overlay {
   position: absolute;
   left: 50%;
@@ -80,8 +403,8 @@ body {
   width: 62px;
   height: 62px;
   border-radius: 999px;
-  border: none;
-  background: radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.06), rgba(23, 27, 34, 0.95) 70%);
+  border: 1px solid rgba(255, 255, 255, 0.17);
+  background: #181818;
   color: #f2f5f8;
   display: grid;
   place-items: center;

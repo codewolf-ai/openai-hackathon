@@ -11,6 +11,22 @@
     <main class="shell">
       <section class="workspace">
         <div id="sceneRoot" class="scene-root"></div>
+        <div id="sourcesStrip" class="sources-strip">
+          <div id="sourcesCluster" class="sources-cluster"></div>
+          <span id="sourcesCount" class="sources-count">0 sources</span>
+        </div>
+        <div id="drawerBackdrop" class="drawer-backdrop"></div>
+        <aside id="agentDrawer" class="agent-drawer">
+          <div class="agent-drawer-content">
+            <ul id="allAgentsList" class="all-agents-list"></ul>
+          </div>
+        </aside>
+        <button id="settingsBtn" class="settings-btn" aria-label="Open Codex App">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7Z"></path>
+            <path d="M19.4 15a1.6 1.6 0 0 0 .32 1.76l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06A1.6 1.6 0 0 0 15 19.4a1.6 1.6 0 0 0-1 .95 1.6 1.6 0 0 1-3 0 1.6 1.6 0 0 0-1-.95 1.6 1.6 0 0 0-1.76.32l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.6 1.6 0 0 0 4.6 15a1.6 1.6 0 0 0-.95-1 1.6 1.6 0 0 1 0-3 1.6 1.6 0 0 0 .95-1 1.6 1.6 0 0 0-.32-1.76l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.6 1.6 0 0 0 9 4.6a1.6 1.6 0 0 0 1-.95 1.6 1.6 0 0 1 3 0 1.6 1.6 0 0 0 1 .95 1.6 1.6 0 0 0 1.76-.32l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.6 1.6 0 0 0 19.4 9c.42.17.78.53.95 1a1.6 1.6 0 0 1 0 3c-.17.47-.53.83-.95 1Z"></path>
+          </svg>
+        </button>
         <div class="voice-overlay">
           <p id="voicePrompt" class="voice-prompt">Say something...</p>
           <div class="voice-actions">
